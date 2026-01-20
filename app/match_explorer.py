@@ -168,7 +168,8 @@ if submitted:
         "--min_salary", str(min_salary),
         "--max_salary", str(max_salary),
         "--region", region,
-        "--max_jobs", str(max_jobs)
+        "--max_jobs", str(max_jobs),
+        "--threads", str(threads)
     ], capture_output=True, text=True)
 
     if result.returncode != 0:
@@ -182,7 +183,8 @@ if submitted:
     # Generate embeddings
     model = SentenceTransformer("all-MiniLM-L6-v2")
     resume_embedding = model.encode(resume_text)
-    job_embeddings = [model.encode(job["description"]) for job in jobs]
+    job_texts = [job.get("description", "") for job in jobs]
+    job_embeddings = model.encode(job_texts)
     scores = cosine_similarity([resume_embedding], job_embeddings)[0]
 
     for job, score in zip(jobs, scores):

@@ -8,6 +8,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import TimeoutException
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
@@ -18,13 +19,15 @@ import time
 start = time.time()
 
 
-def build_url(keywords="", location="", min_salary=None, page=1, region="Australia"):
+def build_url(keywords="", location="", min_salary=None, max_salary=None, page=1, region="Australia"):
     base_url = "https://www.seek.com.au" if region == "Australia" else "https://www.seek.co.nz"
     keyword_slug = "-".join(keywords.lower().split())
     location_slug = location.replace(" ", "-")
 
     url = f"{base_url}/{keyword_slug}-jobs/in-{location_slug}"
-    url += f"?page={page}&salaryrange={min_salary or ''}-&salarytype=annual&sortmode=ListedDate"
+    min_part = "" if min_salary is None else min_salary
+    max_part = "" if max_salary is None else max_salary
+    url += f"?page={page}&salaryrange={min_part}-{max_part}&salarytype=annual&sortmode=ListedDate"
     return url
 
 
@@ -35,7 +38,7 @@ def fetch_jobs(driver, max_jobs=20):
     fetch_start = None
     while len(jobs) < max_jobs:
         fetch_start = time.time()
-        url = build_url(args.keywords, args.location, args.min_salary, page, args.region)
+        url = build_url(args.keywords, args.location, args.min_salary, args.max_salary, page, args.region)
         print(f"Visiting {url}")
 
         
@@ -49,7 +52,8 @@ def fetch_jobs(driver, max_jobs=20):
 
         # 🔍 Dump the HTML of the first page for inspection
         if page == 1:
-            with open("seek_debug_page1.html", "w", encoding="utf-8") as f:
+            debug_path = Path(__file__).resolve().parent.parent / "seek_debug_page1.html"
+            with open(debug_path, "w", encoding="utf-8") as f:
                 f.write(driver.page_source)
 
         # Wait until job titles are visible
@@ -217,7 +221,7 @@ if __name__ == "__main__":
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
     try:
-        jobs = fetch_jobs(driver, max_jobs=20)
+        jobs = fetch_jobs(driver, max_jobs=args.max_jobs)
 
         if jobs:
             if args.threads<=1:

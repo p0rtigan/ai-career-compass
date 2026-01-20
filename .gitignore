@@ -1,11 +1,23 @@
 # Ignore virtual environment
 venv/
+.venv/
 .env/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 *.DS_Store
+
+# IDE/editor
+.vscode/
+.idea/
+
+# Python tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
 
 # Ignore output files
 data/*.json
