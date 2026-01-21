@@ -1,6 +1,7 @@
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 import time
 import json
 import argparse
@@ -10,6 +11,7 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import TimeoutException
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from webdriver_manager.chrome import ChromeDriverManager
 
 
 from urllib.parse import quote_plus
@@ -17,6 +19,8 @@ from urllib.parse import quote_plus
 import time
 
 start = time.time()
+MAX_PAGE_RETRIES = 2
+DETAIL_RETRIES = 2
 
 
 def build_url(keywords="", location="", min_salary=None, max_salary=None, page=1, region="Australia"):
@@ -41,30 +45,32 @@ def fetch_jobs(driver, max_jobs=20):
         url = build_url(args.keywords, args.location, args.min_salary, args.max_salary, page, args.region)
         print(f"Visiting {url}")
 
-        
-        driver.get(url)
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(3)
+        loaded = False
+        for attempt in range(1, MAX_PAGE_RETRIES + 1):
+            driver.get(url)
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(3)
 
-        #time.sleep(10)
+            # Wait until job titles are visible
+            try:
+                WebDriverWait(driver, 20).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "a[data-automation='jobTitle']"))
+                )
+                print("Job cards are now visible.")
+                loaded = True
+                break
+            except TimeoutException:
+                print(f"Job titles not loaded (attempt {attempt}/{MAX_PAGE_RETRIES}).")
+                time.sleep(2)
 
-
+        if not loaded:
+            return []
 
         # 🔍 Dump the HTML of the first page for inspection
         if page == 1:
             debug_path = Path(__file__).resolve().parent.parent / "seek_debug_page1.html"
             with open(debug_path, "w", encoding="utf-8") as f:
                 f.write(driver.page_source)
-
-        # Wait until job titles are visible
-        try:
-            WebDriverWait(driver, 20).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "a[data-automation='jobTitle']"))
-            )
-            print("Job cards are now visible.")
-        except TimeoutException:
-            print("Job titles not loaded after waiting.")
-            return []
 
 
         job_elements = driver.find_elements(By.CSS_SELECTOR, "a[data-automation='jobTitle']")
@@ -95,17 +101,24 @@ def fetch_jobs(driver, max_jobs=20):
 
 
 def enrich_single_job(job):
-    local_driver = webdriver.Chrome(options=chrome_options)
+    local_driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     local_driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     result = {}
 
     try:
         enrich_start = time.time()
 
-        local_driver.get(job["link"])
-        WebDriverWait(local_driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-automation='jobAdDetails']"))
-        )
+        for attempt in range(1, DETAIL_RETRIES + 1):
+            local_driver.get(job["link"])
+            try:
+                WebDriverWait(local_driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-automation='jobAdDetails']"))
+                )
+                break
+            except TimeoutException:
+                if attempt == DETAIL_RETRIES:
+                    raise
+                time.sleep(2)
 
         result.update(job)
         result["description"] = local_driver.find_element(By.CSS_SELECTOR, "div[data-automation='jobAdDetails']").text
@@ -217,7 +230,7 @@ if __name__ == "__main__":
     chrome_options.add_argument("--window-size=1920x1080")
     chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36")
 
-    driver = webdriver.Chrome(options=chrome_options)
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
     try:
@@ -229,10 +242,12 @@ if __name__ == "__main__":
             else:
                 enriched = enrich_jobs_parallel(jobs, args.threads)
                 
-            with open("../data/seek_jobs_enriched.json", "w", encoding="utf-8") as f:
+            data_path = Path(__file__).resolve().parent.parent / "data" / "seek_jobs_enriched.json"
+            data_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(data_path, "w", encoding="utf-8") as f:
                 json.dump(enriched, f, indent=2)
 
-            print(f"\nEnriched and saved {len(enriched)} jobs to ../data/seek_jobs_enriched.json")
+            print(f"\nEnriched and saved {len(enriched)} jobs to {data_path}")
         else:
             print("No jobs collected to enrich.")
     finally:

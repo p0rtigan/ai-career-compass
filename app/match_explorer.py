@@ -5,6 +5,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 import os
 import spacy
 import subprocess
+import sys
+from pathlib import Path
 from keybert import KeyBERT
 import re
 
@@ -68,7 +70,9 @@ def load_keybert_model():
 
 kw_model = load_keybert_model()
 
-import re
+@st.cache_resource
+def load_sentence_model():
+    return SentenceTransformer("all-MiniLM-L6-v2")
 
 STOPWORDS = {
     "various", "several", "role", "team", "position", "skills", "work",
@@ -119,6 +123,26 @@ def extract_resume_keywords(text, top_n=20):
             seen.add(kw_clean)
 
     return cleaned
+
+
+def build_cover_letter(job, resume_keywords, matched_skills, missing_skills):
+    company = job.get("company", "the company")
+    title = job.get("title", "this role")
+    location = job.get("location", "your location")
+    top_keywords = ", ".join(list(resume_keywords)[:6]) if resume_keywords else "relevant experience"
+    matched = ", ".join(matched_skills[:6]) if matched_skills else "key requirements"
+    missing = ", ".join(missing_skills[:4]) if missing_skills else "no major gaps"
+    return (
+        f"Dear Hiring Manager,\n\n"
+        f"I am writing to apply for the {title} position at {company} in {location}. "
+        f"My background includes {top_keywords}, and I have hands-on experience with {matched}. "
+        f"I’m excited by the role and confident I can contribute quickly.\n\n"
+        f"From your job description, I see a focus on {matched}. "
+        f"If selected, I can strengthen areas like {missing} through focused learning and collaboration.\n\n"
+        f"Thank you for your time and consideration. I’d welcome the chance to discuss how I can help.\n\n"
+        f"Sincerely,\n"
+        f"[Your Name]\n"
+    )
     
 st.sidebar.header("\U0001F4C4 Upload Your Resume")
 uploaded_file = st.sidebar.file_uploader("Upload .txt or .docx file", type=["txt", "docx"])
@@ -152,6 +176,7 @@ with st.sidebar.form("search_form"):
     location = st.text_input("Location", value="Melbourne")
     min_salary = st.number_input("Min Salary", value=100000, step=10000)
     max_salary = st.number_input("Max Salary", value=200000, step=10000)
+    st.caption("Salary filtering is best-effort and depends on Seek’s URL parameters.")
     max_jobs = st.number_input("Number of Jobs", value=20, step=10)
     threads = st.number_input("Number of threads", value=1, step=1)
     submitted = st.form_submit_button("🔍 Search Seek Now")
@@ -161,8 +186,10 @@ jobs = []
 if submitted:
     st.info("\U0001F50D Fetching jobs from Seek... this may take a minute.")
 
+    scripts_dir = Path(__file__).resolve().parent.parent / "scripts"
+    ingest_script = scripts_dir / "ingest_seek_selenium.py"
     result = subprocess.run([
-        "python", "../scripts/ingest_seek_selenium.py",
+        sys.executable, str(ingest_script),
         "--keywords", keywords,
         "--location", location,
         "--min_salary", str(min_salary),
@@ -177,13 +204,21 @@ if submitted:
         st.stop()
     else:
         st.success("\u2705 Successfully scraped and enriched jobs.")
-        with open("../data/seek_jobs_enriched.json", "r", encoding="utf-8") as f:
+        data_path = Path(__file__).resolve().parent.parent / "data" / "seek_jobs_enriched.json"
+        with open(data_path, "r", encoding="utf-8") as f:
             jobs = json.load(f)
 
     # Generate embeddings
-    model = SentenceTransformer("all-MiniLM-L6-v2")
+    if not jobs:
+        st.warning("No jobs found for the current search filters.")
+        st.stop()
+
+    model = load_sentence_model()
     resume_embedding = model.encode(resume_text)
     job_texts = [job.get("description", "") for job in jobs]
+    if not any(job_texts):
+        st.warning("Fetched jobs are missing descriptions. Try a different search.")
+        st.stop()
     job_embeddings = model.encode(job_texts)
     scores = cosine_similarity([resume_embedding], job_embeddings)[0]
 
@@ -230,5 +265,39 @@ if submitted:
                 st.markdown("\u26A0\ufe0f **Missing Skills:** " + ", ".join(missing_skills))
             else:
                 st.markdown("\U0001F389 You're covered on all listed skills!")
+
+        with st.expander("\U0001F4E8 Application Toolkit"):
+            cover_letter = build_cover_letter(job, resume_skills, matched_skills, missing_skills)
+            edited_cover_letter = st.text_area(
+                "Cover letter (editable)",
+                value=cover_letter,
+                height=240,
+                key=f"cover_letter_{job.get('link', job.get('title', 'job'))}"
+            )
+            st.download_button(
+                "Download cover letter (.txt)",
+                data=edited_cover_letter,
+                file_name="cover_letter.txt",
+                mime="text/plain",
+            )
+
+            application_pack = {
+                "job": {
+                    "title": job.get("title"),
+                    "company": job.get("company"),
+                    "location": job.get("location"),
+                    "link": job.get("link"),
+                },
+                "resume_keywords": sorted(resume_skills),
+                "matched_skills": matched_skills,
+                "missing_skills": missing_skills,
+                "cover_letter": edited_cover_letter,
+            }
+            st.download_button(
+                "Download application pack (.json)",
+                data=json.dumps(application_pack, indent=2),
+                file_name="application_pack.json",
+                mime="application/json",
+            )
 
         st.markdown("---")
